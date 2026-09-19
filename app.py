@@ -3,6 +3,7 @@ import sqlite3
 import hashlib
 from datetime import datetime
 import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from reportlab.lib.pagesizes import letter
@@ -31,12 +32,13 @@ class Expense:
 
 
 class UserDemographics:
-    """Represents demographic metadata linked to a user."""
-    def __init__(self, age_group: str, occupation: str, location: str, user_id: int):
+    """Represents demographic metadata and preferred currency linked to a user."""
+    def __init__(self, country: str, currency_symbol: str, age_group: str, occupation: str, user_id: int):
         self.user_id = user_id
+        self.country = country
+        self.currency_symbol = currency_symbol
         self.age_group = age_group
         self.occupation = occupation
-        self.location = location
 
 
 class DatabaseManager:
@@ -75,9 +77,10 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS demographics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER UNIQUE NOT NULL,
+                    country TEXT NOT NULL,
+                    currency_symbol TEXT NOT NULL,
                     age_group TEXT NOT NULL,
                     occupation TEXT NOT NULL,
-                    location TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
@@ -129,6 +132,15 @@ class DatabaseManager:
             rows = cursor.fetchall()
             return [Expense(expense_id=r[0], user_id=user_id, amount=r[1], category=r[2], date=r[3]) for r in rows]
 
+    def update_expense(self, expense_id: int, amount: float, category: str, date: str, user_id: int):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE expenses SET amount = ?, category = ?, date = ? WHERE id = ? AND user_id = ?",
+                (amount, category, date, expense_id, user_id)
+            )
+            conn.commit()
+
     def delete_expense(self, expense_id: int, user_id: int):
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -139,25 +151,26 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO demographics (user_id, age_group, occupation, location) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO demographics (user_id, country, currency_symbol, age_group, occupation) 
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
+                    country=excluded.country,
+                    currency_symbol=excluded.currency_symbol,
                     age_group=excluded.age_group,
-                    occupation=excluded.occupation,
-                    location=excluded.location
-            """, (demo.user_id, demo.age_group, demo.occupation, demo.location))
+                    occupation=excluded.occupation
+            """, (demo.user_id, demo.country, demo.currency_symbol, demo.age_group, demo.occupation))
             conn.commit()
 
     def fetch_demographics(self, user_id: int):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT age_group, occupation, location FROM demographics WHERE user_id = ?",
+                "SELECT country, currency_symbol, age_group, occupation FROM demographics WHERE user_id = ?",
                 (user_id,)
             )
             row = cursor.fetchone()
             if row:
-                return UserDemographics(user_id=user_id, age_group=row[0], occupation=row[1], location=row[2])
+                return UserDemographics(user_id=user_id, country=row[0], currency_symbol=row[1], age_group=row[2], occupation=row[3])
             return None
 
 
@@ -167,7 +180,7 @@ class DatabaseManager:
 
 class ReportGenerator:
     @staticmethod
-    def generate_bar_chart(expenses):
+    def generate_bar_chart(expenses, currency="$"):
         breakdown = {}
         for exp in expenses:
             breakdown[exp.category] = breakdown.get(exp.category, 0.0) + exp.amount
@@ -184,7 +197,7 @@ class ReportGenerator:
         fig = px.bar(
             x=categories, 
             y=amounts, 
-            labels={'x': 'Category', 'y': 'Amount ($)'},
+            labels={'x': 'Category', 'y': f'Amount ({currency})'},
             title="Expenses by Category",
             color_discrete_sequence=['#3B82F6']
         )
@@ -227,12 +240,14 @@ class ReportGenerator:
     @staticmethod
     def generate_csv(expenses, username: str, demo: UserDemographics):
         output = io.StringIO()
-        output.write("Username,Age_Group,Occupation,Location,Expense_ID,Amount,Category,Date\n")
+        output.write("Username,Country,Currency,Age_Group,Occupation,Expense_ID,Amount,Category,Date\n")
+        country = demo.country if demo else "N/A"
+        currency = demo.currency_symbol if demo else "N/A"
         age = demo.age_group if demo else "N/A"
         occ = demo.occupation if demo else "N/A"
-        loc = demo.location if demo else "N/A"
+
         for exp in expenses:
-            output.write(f'"{username}","{age}","{occ}","{loc}",{exp.id},{exp.amount:.2f},"{exp.category}","{exp.date}"\n')
+            output.write(f'"{username}","{country}","{currency}","{age}","{occ}",{exp.id},{exp.amount:.2f},"{exp.category}","{exp.date}"\n')
         return output.getvalue()
 
     @staticmethod
@@ -244,11 +259,13 @@ class ReportGenerator:
         p.setFont("Helvetica", 10)
         p.drawString(100, 735, f"User: {username} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
+        curr = demo.currency_symbol if demo else "$"
+
         if demo:
             p.setFont("Helvetica-Bold", 11)
             p.drawString(100, 705, "User Demographics Profile:")
             p.setFont("Helvetica", 10)
-            p.drawString(100, 690, f"Age: {demo.age_group} | Occupation: {demo.occupation} | Location: {demo.location}")
+            p.drawString(100, 690, f"Country: {demo.country} ({demo.currency_symbol}) | Age: {demo.age_group} | Occupation: {demo.occupation}")
             y_start = 655
         else:
             y_start = 690
@@ -256,7 +273,7 @@ class ReportGenerator:
         p.setFont("Helvetica-Bold", 11)
         p.drawString(100, y_start, "Date")
         p.drawString(220, y_start, "Category")
-        p.drawString(380, y_start, "Amount ($)")
+        p.drawString(380, y_start, f"Amount ({curr})")
         p.line(100, y_start - 5, 500, y_start - 5)
 
         y = y_start - 20
@@ -268,14 +285,14 @@ class ReportGenerator:
                 y = 750
             p.drawString(100, y, str(exp.date))
             p.drawString(220, y, str(exp.category))
-            p.drawString(380, y, f"${exp.amount:.2f}")
+            p.drawString(380, y, f"{curr}{exp.amount:.2f}")
             total += exp.amount
             y -= 20
 
         p.line(100, y + 10, 500, y + 10)
         p.setFont("Helvetica-Bold", 11)
         p.drawString(220, y - 10, "Total Expenditure:")
-        p.drawString(380, y - 10, f"${total:.2f}")
+        p.drawString(380, y - 10, f"{curr}{total:.2f}")
 
         p.showPage()
         p.save()
@@ -287,15 +304,13 @@ db = DatabaseManager()
 
 
 # ==============================================================================
-# 3. GLOBAL UI STYLING & NAVIGATION
+# 3. GLOBAL UI STYLING & ONBOARDING MODAL
 # ==============================================================================
 
 st.set_page_config(page_title="FinTrack Pro - Expense Intelligence", page_icon="💳", layout="wide")
 
-# Custom Professional UI Styling
 st.markdown("""
 <style>
-    /* Metric Card Styling */
     .metric-card {
         background-color: #1E293B;
         border: 1px solid #334155;
@@ -317,7 +332,6 @@ st.markdown("""
         color: #F8FAFC;
         margin-top: 5px;
     }
-    /* Section Headers */
     .section-title {
         font-size: 1.2rem;
         font-weight: 600;
@@ -328,6 +342,38 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+def check_onboarding(user: User):
+    """Enforces onboarding form on first-time user login."""
+    demo = db.fetch_demographics(user.id)
+    if not demo:
+        st.warning("⚠️ **Profile Setup Required**: Please enter your profile details below to customize your app currency and setup.")
+        with st.form("onboarding_form"):
+            st.subheader("👤 First-Time User Profile Setup")
+            
+            c1, c2 = st.columns(2)
+            country = c1.text_input("Country Name", placeholder="e.g., United States, India, UK")
+            currency_symbol = c2.text_input("Currency Symbol", value="$", placeholder="e.g., $, €, £, ₹, ₨")
+            
+            c3, c4 = st.columns(2)
+            age_group = c3.selectbox("Age Group", ["<18", "18-24", "25-34", "35-49", "50+"], index=1)
+            occupation = c4.selectbox("Occupation", ["Student", "Employed", "Self-Employed", "Freelancer", "Other"])
+
+            if st.form_submit_button("Complete Setup", type="primary", use_container_width=True):
+                if country and currency_symbol:
+                    db.save_demographics(UserDemographics(
+                        country=country.strip(),
+                        currency_symbol=currency_symbol.strip(),
+                        age_group=age_group,
+                        occupation=occupation,
+                        user_id=user.id
+                    ))
+                    st.success("Profile saved! Redirecting to dashboard...")
+                    st.rerun()
+                else:
+                    st.error("Please provide both Country and Currency Symbol.")
+        st.stop()
 
 
 # ==============================================================================
@@ -366,8 +412,11 @@ def login_signup_page():
 
 def main_dashboard():
     user: User = st.session_state["user"]
-    expenses = db.fetch_user_expenses(user.id)
+    check_onboarding(user)
+
     demo = db.fetch_demographics(user.id)
+    expenses = db.fetch_user_expenses(user.id)
+    curr = demo.currency_symbol
 
     st.title("💸 Executive Dashboard")
     st.caption("Track, record, and manage personal expenses effortlessly.")
@@ -378,13 +427,13 @@ def main_dashboard():
     avg_expense = (total_spent / len(expenses)) if expenses else 0.0
 
     with m1:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">Total Expenditure</div><div class="metric-value">${total_spent:,.2f}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">Total Expenditure</div><div class="metric-value">{curr}{total_spent:,.2f}</div></div>', unsafe_allow_html=True)
     with m2:
         st.markdown(f'<div class="metric-card"><div class="metric-label">Total Transactions</div><div class="metric-value">{len(expenses)}</div></div>', unsafe_allow_html=True)
     with m3:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">Average Transaction</div><div class="metric-value">${avg_expense:,.2f}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">Average Transaction</div><div class="metric-value">{curr}{avg_expense:,.2f}</div></div>', unsafe_allow_html=True)
     with m4:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">Profile Status</div><div class="metric-value">{"Complete" if demo else "Incomplete"}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">Country / Currency</div><div class="metric-value">{demo.country} ({curr})</div></div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -393,7 +442,7 @@ def main_dashboard():
     with col1:
         st.markdown('<div class="section-title">Log New Expense</div>', unsafe_allow_html=True)
         with st.form(key="expense_form", clear_on_submit=True):
-            amount = st.number_input("Amount ($)", min_value=0.01, step=0.01)
+            amount = st.number_input(f"Amount ({curr})", min_value=0.01, step=0.01)
             category = st.selectbox("Category", ["Food", "Travel", "Study", "Entertainment", "Bills", "Shopping"])
             expense_date = st.date_input("Date", datetime.now())
             if st.form_submit_button("Record Expense", type="primary", use_container_width=True):
@@ -401,33 +450,14 @@ def main_dashboard():
                 st.toast("Expense added successfully!", icon="✅")
                 st.rerun()
 
-        st.markdown('<div class="section-title" style="margin-top:25px;">Demographic Profile</div>', unsafe_allow_html=True)
-        default_age = demo.age_group if demo else "18-24"
-        default_occ = demo.occupation if demo else "Student"
-        default_loc = demo.location if demo else "Urban"
-
-        age_opts = ["<18", "18-24", "25-34", "35-49", "50+"]
-        occ_opts = ["Student", "Employed", "Self-Employed", "Freelancer", "Other"]
-        loc_opts = ["Urban", "Suburban", "Rural"]
-
-        with st.form(key="demo_form"):
-            c_a, c_o, c_l = st.columns(3)
-            age_group = c_a.selectbox("Age Group", age_opts, index=age_opts.index(default_age))
-            occupation = c_o.selectbox("Occupation", occ_opts, index=occ_opts.index(default_occ))
-            location = c_l.selectbox("Location", loc_opts, index=loc_opts.index(default_loc))
-            if st.form_submit_button("Update Demographics", use_container_width=True):
-                db.save_demographics(UserDemographics(age_group=age_group, occupation=occupation, location=location, user_id=user.id))
-                st.toast("Profile updated!", icon="👤")
-                st.rerun()
-
     with col2:
-        st.markdown('<div class="section-title">Expense Log & Management</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Recent Transactions</div>', unsafe_allow_html=True)
         if expenses:
-            for exp in expenses:
+            for exp in expenses[:5]:  # Display recent 5
                 c1, c2, c3, c4 = st.columns([2, 2, 2, 0.8])
                 c1.text(f"📅 {exp.date}")
                 c2.text(f"🏷️ {exp.category}")
-                c3.markdown(f"**${exp.amount:,.2f}**")
+                c3.markdown(f"**{curr}{exp.amount:,.2f}**")
                 if c4.button("🗑️", key=f"del_{exp.id}"):
                     db.delete_expense(exp.id, user.id)
                     st.rerun()
@@ -437,7 +467,10 @@ def main_dashboard():
 
 def charts_page():
     user: User = st.session_state["user"]
+    check_onboarding(user)
+
     expenses = db.fetch_user_expenses(user.id)
+    demo = db.fetch_demographics(user.id)
 
     st.title("📊 Financial Analytics & Visualizations")
     st.caption("Interactive visual breakdown of expenditures by category.")
@@ -447,37 +480,118 @@ def charts_page():
     else:
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(ReportGenerator.generate_bar_chart(expenses), use_container_width=True)
+            st.plotly_chart(ReportGenerator.generate_bar_chart(expenses, demo.currency_symbol), use_container_width=True)
         with c2:
             st.plotly_chart(ReportGenerator.generate_pie_chart(expenses), use_container_width=True)
 
 
 def demographics_page():
     user: User = st.session_state["user"]
+    check_onboarding(user)
+
     expenses = db.fetch_user_expenses(user.id)
     demo = db.fetch_demographics(user.id)
 
-    st.title("👤 Demographic Data & Report Exports")
-    st.caption("Export full personal financial logs combined with user profile metadata.")
+    st.title("👤 Demographic Reports & Data Management")
+    st.caption("Manage your profile settings, perform in-place expense edits, and export statements.")
 
-    st.markdown('<div class="section-title">User Demographics Profile</div>', unsafe_allow_html=True)
-    if demo:
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f'<div class="metric-card"><div class="metric-label">Age Group</div><div class="metric-value">{demo.age_group}</div></div>', unsafe_allow_html=True)
-        c2.markdown(f'<div class="metric-card"><div class="metric-label">Occupation</div><div class="metric-value">{demo.occupation}</div></div>', unsafe_allow_html=True)
-        c3.markdown(f'<div class="metric-card"><div class="metric-label">Location Type</div><div class="metric-value">{demo.location}</div></div>', unsafe_allow_html=True)
-    else:
-        st.info("No demographic metadata added. Fill out the profile section on the main dashboard.")
+    # Section 1: Demographics Cards & Update
+    st.markdown('<div class="section-title">Demographic Profile</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f'<div class="metric-card"><div class="metric-label">Country</div><div class="metric-value">{demo.country}</div></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card"><div class="metric-label">Currency</div><div class="metric-value">{demo.currency_symbol}</div></div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="metric-card"><div class="metric-label">Age Group</div><div class="metric-value">{demo.age_group}</div></div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="metric-card"><div class="metric-label">Occupation</div><div class="metric-value">{demo.occupation}</div></div>', unsafe_allow_html=True)
+
+    with st.expander("⚙️ Edit Profile & Currency Settings"):
+        with st.form("update_demo_form"):
+            ec1, ec2 = st.columns(2)
+            u_country = ec1.text_input("Country", value=demo.country)
+            u_currency = ec2.text_input("Currency Symbol", value=demo.currency_symbol)
+
+            ec3, ec4 = st.columns(2)
+            age_opts = ["<18", "18-24", "25-34", "35-49", "50+"]
+            occ_opts = ["Student", "Employed", "Self-Employed", "Freelancer", "Other"]
+            u_age = ec3.selectbox("Age Group", age_opts, index=age_opts.index(demo.age_group) if demo.age_group in age_opts else 0)
+            u_occ = ec4.selectbox("Occupation", occ_opts, index=occ_opts.index(demo.occupation) if demo.occupation in occ_opts else 0)
+
+            if st.form_submit_button("Save Profile Changes"):
+                db.save_demographics(UserDemographics(
+                    country=u_country.strip(),
+                    currency_symbol=u_currency.strip(),
+                    age_group=u_age,
+                    occupation=u_occ,
+                    user_id=user.id
+                ))
+                st.toast("Profile updated!", icon="✅")
+                st.rerun()
 
     st.divider()
 
+    # Section 2: Interactive Expense Editor Table
+    st.markdown('<div class="section-title">Editable Expense Table</div>', unsafe_allow_html=True)
+    st.caption("💡 **Tip**: Double-click any cell below to edit Amount, Category, or Date directly, then click **'Save Table Changes'**.")
+
+    if expenses:
+        # Build pandas dataframe for st.data_editor
+        data = [{
+            "ID": exp.id,
+            "Amount": exp.amount,
+            "Category": exp.category,
+            "Date": exp.date
+        } for exp in expenses]
+        df = pd.DataFrame(data)
+
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", disabled=True),
+                "Amount": st.column_config.NumberColumn(f"Amount ({demo.currency_symbol})", min_value=0.01, format="%.2f", required=True),
+                "Category": st.column_config.SelectboxColumn("Category", options=["Food", "Travel", "Study", "Entertainment", "Bills", "Shopping"], required=True),
+                "Date": st.column_config.DateColumn("Date", required=True)
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic"
+        )
+
+        col_save, col_del = st.columns([1, 4])
+        if col_save.button("💾 Save Table Changes", type="primary"):
+            # Update database based on edited Dataframe
+            current_ids = set(edited_df["ID"].dropna().astype(int))
+            original_ids = {exp.id for exp in expenses}
+
+            # Handle Deleted Rows
+            deleted_ids = original_ids - current_ids
+            for del_id in deleted_ids:
+                db.delete_expense(del_id, user.id)
+
+            # Handle Updates & Edits
+            for _, row in edited_df.iterrows():
+                if pd.notna(row["ID"]):
+                    db.update_expense(
+                        expense_id=int(row["ID"]),
+                        amount=float(row["Amount"]),
+                        category=str(row["Category"]),
+                        date=str(row["Date"]),
+                        user_id=user.id
+                    )
+
+            st.toast("Database successfully updated!", icon="🎉")
+            st.rerun()
+    else:
+        st.info("No expense data recorded yet.")
+
+    st.divider()
+
+    # Section 3: Downloads
     st.markdown('<div class="section-title">Download Statements</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
 
     with col1:
         csv_bytes = ReportGenerator.generate_csv(expenses, user.username, demo)
         st.download_button(
-            label="📄 Export Full Data (CSV)",
+            label="📄 Export Data (CSV)",
             data=csv_bytes,
             file_name=f"{user.username}_expense_demographics.csv",
             mime="text/csv",
@@ -488,7 +602,7 @@ def demographics_page():
     with col2:
         pdf_bytes = ReportGenerator.generate_pdf(expenses, user.username, demo)
         st.download_button(
-            label="🔴 Export Summary Statement (PDF)",
+            label="🔴 Export Statement (PDF)",
             data=pdf_bytes,
             file_name=f"{user.username}_expense_report.pdf",
             mime="application/pdf",
@@ -504,9 +618,8 @@ if "user" not in st.session_state:
     page_login = st.Page(login_signup_page, title="Portal", icon="🔐")
     pg = st.navigation([page_login])
 else:
-    # Sidebar Profile & Control
     user: User = st.session_state["user"]
-    st.sidebar.markdown(f"### 👤 Logged in as:\n**{user.username}**")
+    st.sidebar.markdown(f"### 👤 Active Account:\n**{user.username}**")
     if st.sidebar.button("🚪 Logout", use_container_width=True):
         del st.session_state["user"]
         st.rerun()
@@ -515,7 +628,7 @@ else:
 
     page_main = st.Page(main_dashboard, title="Executive Dashboard", icon="💸", default=True)
     page_charts = st.Page(charts_page, title="Financial Analytics", icon="📊")
-    page_demographics = st.Page(demographics_page, title="Demographics & Exports", icon="👤")
+    page_demographics = st.Page(demographics_page, title="Demographics & Reports", icon="👤")
     
     pg = st.navigation({
         "Application Menu": [page_main, page_charts, page_demographics]
