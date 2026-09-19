@@ -77,15 +77,24 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS demographics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER UNIQUE NOT NULL,
-                    country TEXT NOT NULL,
-                    currency_symbol TEXT NOT NULL,
+                    country TEXT NOT NULL DEFAULT 'USA',
+                    currency_symbol TEXT NOT NULL DEFAULT '$',
                     age_group TEXT NOT NULL,
                     occupation TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
-            conn.commit()
 
+            # Auto-migrate existing database tables if missing new columns
+            cursor.execute("PRAGMA table_info(demographics)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if columns:
+                if "country" not in columns:
+                    cursor.execute("ALTER TABLE demographics ADD COLUMN country TEXT NOT NULL DEFAULT 'USA'")
+                if "currency_symbol" not in columns:
+                    cursor.execute("ALTER TABLE demographics ADD COLUMN currency_symbol TEXT NOT NULL DEFAULT '$'")
+
+            conn.commit()
     def create_user(self, username: str, password: str) -> bool:
         try:
             hashed_pw = self._hash_password(password)
