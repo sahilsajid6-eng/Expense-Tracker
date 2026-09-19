@@ -307,7 +307,7 @@ db = DatabaseManager()
 # 3. GLOBAL UI STYLING & ONBOARDING MODAL
 # ==============================================================================
 
-st.set_page_config(page_title="FinTrack Pro - Expense Intelligence", page_icon="💳", layout="wide")
+st.set_page_config(page_title="Login Portal - Expense Tracker", page_icon="💳", layout="wide")
 
 st.markdown("""
 <style>
@@ -383,7 +383,7 @@ def check_onboarding(user: User):
 def login_signup_page():
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        st.markdown("<h2 style='text-align: center; margin-bottom: 20px;'>💳 FinTrack Pro Portal</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align: center; margin-bottom: 20px;'>Login Portal</h2>", unsafe_allow_html=True)
         tab1, tab2 = st.tabs(["🔐 Login", "📝 Sign Up"])
 
         with tab1:
